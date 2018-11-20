@@ -6,7 +6,7 @@ es = Elasticsearch()
 index = 'pantry_list'
 lat = 40.022079
 lon = -82.977878
-distance = '5km'
+distance = '5mi'
 
 # TODO: There is probably a nicer way to do this via the dsl
 raw_query = {
@@ -25,16 +25,28 @@ raw_query = {
                 }
             }
         }
-    }
+    },
+    "sort": [
+        {
+            "_geo_distance": {
+                "location": {
+                    "lat": lat,
+                    "lon": lon
+                },
+                "order": "asc",
+                "unit": "mi",
+                "distance_type": "plane"
+            }
+        }
+    ]
 }
 search = Search.from_dict(raw_query).using(es)
 search.doc_type("pantry")
 search.index(index)
-search.source(include=['loc_name', 'city', 'state', 'address1', 'zip'])
-search.sort('score')
 res = search.execute()
 
 print("Found {} documents matching located around latitude {} longitude {}".format(len(res.hits), lat, lon))
+# The closer meta.sort gets to 0 the closer it is to the lat/lon
 for resp in res.hits:
-    print("score: {} name: {} address1: {} located in {}".format(resp.meta.score, resp.loc_name, resp.address1,
+    print("score: {} name: {} address1: {} located in {}".format(resp.meta.sort[0], resp.loc_name, resp.address1,
                                                                  resp.city))

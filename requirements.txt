@@ -1,3 +1,6 @@
 pandas
+certifi
+requests[security]
+urllib3[secure]
 elasticsearch>=6.0.0,<7.0.0
 elasticsearch_dsl

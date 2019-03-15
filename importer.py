@@ -1,16 +1,33 @@
+from ssl import create_default_context
+from uuid import uuid4 as uuid4
+
 import pandas as pd
-from elasticsearch import Elasticsearch
+import urllib3
+from elasticsearch import Elasticsearch, helpers
 
-es = Elasticsearch()
+urllib3.disable_warnings()
 
+context = create_default_context(capath=".")
+update_mappings = False
+# update_mappings = False
+# purge = True
+purge = False
+load = True
+# load = False
+use_uuid = True
+# use_uuid = False
+# constant_data = False
+constant_data = True
+target_doc_count = 60000000
+elastic_hosts = [
+    '1.2.3.4',
+]
+username=''
+password=''
+
+index_name = 'pantry_list'
 pantry_list = pd.read_csv(filepath_or_buffer='pantrytrak_locations.csv', parse_dates=True, index_col='loc_id')
-# service_types = pd.read_csv(filepath_or_buffer='service_types.csv', parse_dates=True, index_col='service_id')
-# trak_agency_schedule_dates = pd.read_csv(filepath_or_buffer='trak_agency_schedule_dates.csv', parse_dates=True, index_col='tasd_id')
-# trak_agency_schedule_geographies = pd.read_csv(filepath_or_buffer='trak_agency_schedule_geographies.csv', parse_dates=True, index_col='tasg_id')
-# trak_agency_schedule_hours = pd.read_csv(filepath_or_buffer='trak_agency_schedule_hours.csv', parse_dates=True, index_col='tash_id')
-# location_agency_crosswalk = pd.read_csv(filepath_or_buffer='location_agency_crosswalk.csv', parse_dates=True, index_col='pt_loc_id')
 
-# https://www.elastic.co/guide/en/elasticsearch/reference/current/geo-point.html
 pantry_list_mapping = {
     "pantry": {
         "properties": {
@@ -31,33 +48,100 @@ pantry_list_mapping = {
         }
     }
 }
-if not es.indices.exists('pantry_list'):
-    es.indices.create('pantry_list')
-    # TODO: Will this mapping ever not exist or be updated?
-    es.indices.put_mapping(doc_type='pantry', index='pantry_list', body=pantry_list_mapping)
 
-# TODO, we are getting some data load failures. Probably just need to get more specific with pandas
-for doc_id, row in pantry_list.iterrows():
-    doc = {
-        'loc_name': row["loc_name"],
-        'loc_nickname': row["loc_nickname"],
-        'address1': row["address1"],
-        # 'address2': row["address2"],
-        'city': row["city"],
-        'state': row["state"],
-        'zip': row["zip"],
-        # 'country_fips': row["country_fips"],
-        # 'geofips_tract': row["geofips_tract"],
-        # 'geofips_bg': row["geofips_bg"],
-        'location': {
-            'lat': row["pt_latitude"],
-            'lon': row["pt_longitude"],
+
+def load_docs(pantry_list):
+    for x, row in pantry_list.iterrows():
+        if use_uuid:
+            doc_id = uuid4().int
+        else:
+            doc_id = x
+
+        fields = ['loc_name', 'loc_nickname', 'address1', 'location']
+        values = [
+            row['loc_name'],
+            row['loc_nickname'],
+            row['address1'],
+            {
+                'lat': row['pt_latitude'],
+                'lon': row['pt_longitude']
+            }
+        ]
+
+        yield doc_id, dict(zip(fields, values))
+
+
+def bulk(es, data):
+    k = ({
+        "_index": index_name,
+        "_type": "pantry",
+        "_source": doc,
+    } for doc_id, doc in load_docs(data))
+    helpers.bulk(es, k)
+
+
+def get_doc_count(es, index_name):
+    stats = es.indices.stats(index=index_name)
+    doc_count = stats['indices'][index_name]['primaries']['docs']['count']
+    return doc_count
+
+
+es = Elasticsearch(
+    elastic_hosts,
+    port=9200,
+    use_ssl=True,
+    ssl_context=context,
+    http_auth=('dashboard_wr144', 'dashboard_wr'),
+    retry_on_timeout=True,
+    randomize_hosts=True,
+)
+
+admin_es = Elasticsearch(
+    elastic_hosts,
+    port=9200,
+    use_ssl=True,
+    ssl_context=context,
+    http_auth=(username, password),
+    retry_on_timeout=True,
+    randomize_hosts=True,
+)
+
+if es.indices.exists(index_name) and purge:
+    print("Deleting {}".format(index_name))
+    es.indices.delete(index_name)
+
+if not es.indices.exists(index_name):
+    index_params = {
+        "settings": {
+            "index": {
+                "number_of_shards": 3,
+                "number_of_replicas": 2,
+                "soft_deletes": {
+                    "enabled": True,
+                    "retention": {
+                        "operations": 1024
+                    }
+                }
+            }
         },
-        # 'crh_zone_name': row["crh_zone_name"], # getting nans
-        # 'crh_zone_id': row["crh_zone_id"], # getting nans
+        "mappings": pantry_list_mapping
+
     }
-    res = es.index(index="pantry_list", doc_type='pantry', id=doc_id, body=doc)
-    if res['result'] == 'created':
-        print("added record id {} for {}".format(doc_id, row["loc_name"]))
-    if res['result'] == 'updated':
-        print("updated record id {} for {}".format(doc_id, row["loc_name"]))
+    print("Creating {} index".format(index_name))
+    es.indices.create(index=index_name, body=index_params)
+
+if update_mappings:
+    es.indices.put_mapping(doc_type='pantry', index=index_name, body=pantry_list_mapping)
+
+if load:
+    # TODO, we are getting some data load failures. Probably just need to get more specific with pandas
+    if constant_data:
+        while 1:
+            cur_doc_count = get_doc_count(admin_es, index_name)
+            if cur_doc_count <= target_doc_count:
+                bulk(es, pantry_list)
+            else:
+                print("Hit target doc count of {} in {} - done".format(cur_doc_count, index_name))
+                exit(0)
+    else:
+        bulk(es, pantry_list)

@@ -16,11 +16,8 @@ load = True
 # load = False
 use_uuid = True
 # use_uuid = False
-# constant_data = False
-constant_data = True
-target_doc_count = 60000000
 elastic_hosts = [
-    '1.2.3.4',
+    '127.0.0.1',
 ]
 username=''
 password=''
@@ -89,19 +86,9 @@ def get_doc_count(es, index_name):
 es = Elasticsearch(
     elastic_hosts,
     port=9200,
-    use_ssl=True,
+    #use_ssl=True,
     ssl_context=context,
-    http_auth=('dashboard_wr144', 'dashboard_wr'),
-    retry_on_timeout=True,
-    randomize_hosts=True,
-)
-
-admin_es = Elasticsearch(
-    elastic_hosts,
-    port=9200,
-    use_ssl=True,
-    ssl_context=context,
-    http_auth=(username, password),
+    #http_auth=(username, password),
     retry_on_timeout=True,
     randomize_hosts=True,
 )
@@ -114,14 +101,8 @@ if not es.indices.exists(index_name):
     index_params = {
         "settings": {
             "index": {
-                "number_of_shards": 3,
-                "number_of_replicas": 2,
-                "soft_deletes": {
-                    "enabled": True,
-                    "retention": {
-                        "operations": 1024
-                    }
-                }
+                "number_of_shards": 1,
+                "number_of_replicas": 1,
             }
         },
         "mappings": pantry_list_mapping
@@ -134,14 +115,4 @@ if update_mappings:
     es.indices.put_mapping(doc_type='pantry', index=index_name, body=pantry_list_mapping)
 
 if load:
-    # TODO, we are getting some data load failures. Probably just need to get more specific with pandas
-    if constant_data:
-        while 1:
-            cur_doc_count = get_doc_count(admin_es, index_name)
-            if cur_doc_count <= target_doc_count:
-                bulk(es, pantry_list)
-            else:
-                print("Hit target doc count of {} in {} - done".format(cur_doc_count, index_name))
-                exit(0)
-    else:
-        bulk(es, pantry_list)
+    bulk(es, pantry_list)
